@@ -1,18 +1,19 @@
 /THIS IS THE GIC MICROGRID COMPETITION PROJECT CREATED BY TEAM MICROLINK PRESENTING THE FLOWGRID PRODUCT TO AID IN ACHIEVING SDG 7/
-
+//coded by Marwan Khaled
 
 #include <LiquidCrystal.h>
 #include <Adafruit_INA219.h>
 #include <Wire.h>
+#include <avr/wdt.h>
 
 
 
 /===== 1. VARIABLES AND CONSTANTS =====/
-#define mosfet1 8
-#define mosfet2 7
+#define mosfet1 4
+#define mosfet2 5
 #define mosfet3 6
-#define mosfet4 5
-#define mosfet5 4
+#define mosfet4 7
+#define mosfet5 8
 #define isolationRelay 43
 
 #define lcdRS 22
@@ -34,26 +35,28 @@
 
 #define buzzer 44
 
-#define INA219_ADDR1 0x40 
-#define INA219_ADDR2 0x41
-#define INA219_ADDR3 0x44
-#define INA219_ADDR4 0x45
+#define INA219_ADDR1 0x45
+#define INA219_ADDR2 0x44
 
-#define disasterTimeThreshold 30000
-#define maxDetectedVoltage 16
+#define disasterTimeThreshold 20000
+#define maxDetectedVoltage 24
 int pageNumber;
 int totalPageNumber;
 int danger;
+
+unsigned long disasterEnterTime = 0;
+unsigned long lastSwitchTime = 0;
+#define recoveryStableTime 15000
+#define relayMinSwitchTime 10000
+
 
 
 /===== 2. GLOBAL STATES =====/
 
 LiquidCrystal lcd1(lcdRS,lcdE,lcdD4,lcdD5,lcdD6,lcdD7);
 
-Adafruit_INA219 ina219_GRID(INA219_ADDR1);
-Adafruit_INA219 ina219_UPS(INA219_ADDR2);
-Adafruit_INA219 ina219_3(INA219_ADDR3);
-Adafruit_INA219 ina219_4(INA219_ADDR4);
+Adafruit_INA219 ina219_1(INA219_ADDR1);
+Adafruit_INA219 ina219_2(INA219_ADDR2);
 
 enum SYSTEMSTATE {
   NORMAL, CONSERVING, DISASTER,
@@ -66,10 +69,16 @@ enum LOADPRIORITY {
 };
 
 enum FAULTTYPE {
-  NO_FAULT = 0, UNDERVOLTAGE, SENSOR_FAULT, OVERCURRENT, OVERVOLTAGE, USER_INPUT,
+  NO_FAULT = 0, SENSOR_FAULT, UNDERVOLTAGE, OVERCURRENT, OVERVOLTAGE, USER_INPUT,
 };
 
 FAULTTYPE Fault;
+
+enum SENSORTYPE {
+  BUSSENSOR, LOADSENSOR,
+};
+SENSORTYPE sensorType;
+
 
 struct LOADGROUP {
   char GroupName[20];
@@ -78,7 +87,6 @@ struct LOADGROUP {
   bool DCload;
   uint8_t mosfetPin;
   bool isInductive;
-  bool enabled; 
   int PWM;   
 };
 
@@ -94,26 +102,27 @@ struct SENSORDATA {
   float maxCurrent;
   bool present;
   FAULTTYPE Fault;
+  SENSORTYPE sensorType;
+
 };
 
 
 /===== 3. Load group control =====/
 
-LOADGROUP loadgroups[4] = {
-  {"Group1", IMPORTANT, true, true, mosfet1, false, false, 100},
-  {"Group2", IMPORTANT, false, true, mosfet2, true, false, 100},
-  {"Group3", OPTIONAL, false, true, mosfet3, true, false, 100},
-  {"Group4", OPTIONAL, true, true, mosfet4, false, false, 100}, //| Group name | Load Priority | Accept throttling | DC load | Mosfet Pin | isInductive | Enabled | PWM |
+LOADGROUP loadgroups[] = {
+  {"Group1-LIGHTING", IMPORTANT, true, true, mosfet1, false, 100},
+  {"Group2-HVAC", IMPORTANT, false, true, mosfet2, true, 100},
+  {"Group3-EMERLIGHTS", CRITICAL, false, true, mosfet3, false, 100},
+  {"Group4-LUXURY", OPTIONAL, false, true, mosfet4, true, 100}, //| Group name | Load Priority | Accept throttling | DC load | Mosfet Pin | isInductive | PWM |
 };
 
 const int loadAmount = sizeof(loadgroups)/sizeof(loadgroups[0]);
 
 SENSORDATA sensorData[] = {
-  {"Grid",&ina219_GRID, 0, 0, 0, false, 14.0, 11.0, 3.0, false},
-  {"UPS",&ina219_UPS, 0, 0, 0, false, 14.0, 11.0, 3.0, false},
-  {"S3",&ina219_3, 0, 0, 0, false, 14.0, 11.0, 2.0, false},
-  {"S4",&ina219_4, 0, 0, 0, false, 7.5, 5.5, 3.0, false} //| sensor | voltage | current | power | validity | max voltage | min voltage | max current | present |
+  {"GRID",&ina219_1, 0, 0, 0, false, 14.0, 11.5, 3.0, false, NO_FAULT, BUSSENSOR},
+  {"UPS",&ina219_2, 0, 0, 0, false, 14.0, 10.9, 3.0, false, NO_FAULT, BUSSENSOR}, //| sensor | voltage | current | power | valid | max voltage | min voltage | max current | present | Fault type | Sensor Type
 };
+
 const int NUMOFSENSORS = sizeof(sensorData)/sizeof(sensorData[0]);
 
 
@@ -139,7 +148,7 @@ void SensorSetup() {
 
 void retryMissingSensors() {
   static unsigned long lastRetry = 0;
-  if(millis()-lastRetry < 2000) return;
+  if(millis()-lastRetry < 1000) return;
   lastRetry = millis();
   
   for(int i = 0; i < NUMOFSENSORS; i++){
@@ -155,8 +164,9 @@ void retryMissingSensors() {
 void measureAndValidate() {
   
   static unsigned long lastTime = 0;
+  static unsigned long lastReading = 0;
 
-  if(millis()-lastTime < 2000) return;
+  if(millis()-lastTime < 200) return;
   lastTime = millis();
   
 
@@ -170,10 +180,12 @@ void measureAndValidate() {
     float v = sensorData[i].sensors->getBusVoltage_V();
     float c = sensorData[i].sensors->getCurrent_mA();
     
-    if(v < 0 || v > maxDetectedVoltage || c < 0 || c > sensorData[i].maxCurrent*1000){ //*1000 to convert from A to mA
-      sensorData[i].voltage = sensorData[i].current = sensorData[i].power = 0;
-      sensorData[i].valid = false;
-      continue;
+    if(v < -0.1 || v > maxDetectedVoltage || c < -0.1 || c > sensorData[i].maxCurrent*1000){ //*1000 to convert from A to mA
+      if(millis() - lastReading > 2000){
+        sensorData[i].voltage = sensorData[i].current = sensorData[i].power = 0;
+        sensorData[i].valid = false;
+        continue;
+      }      
     }
     else{
       sensorData[i].valid = true;
@@ -219,6 +231,7 @@ int computeDangerScore(){
   static SYSTEMSTATE lastState = NORMAL;
   static int score = 0;
   FAULTTYPE worstfault = NO_FAULT;
+  bool GRIDBAD = false;
 
   if(digitalRead(buttonDisaster) == HIGH){
     lastState = DISASTER;
@@ -238,13 +251,16 @@ int computeDangerScore(){
     Fault = NO_FAULT;
   }
   
-  switch(lastState){
-    case DISASTER: systemState = lastState; return 100; 
-    case CONSERVING: systemState = lastState; return 50;
-    case NORMAL: systemState = lastState; break;
+  if(lastState == DISASTER && Fault == USER_INPUT){
+    switch(lastState){
+      case DISASTER: systemState = lastState; return 100; 
+      case CONSERVING: systemState = lastState; return 50;
+      case NORMAL: systemState = lastState; break;
+    }
   }
   
   for(int i=0; i < NUMOFSENSORS; i++){
+    if(sensorData[i].sensorType == BUSSENSOR){
     if(!sensorData[i].present){
       worstfault = max(worstfault, SENSOR_FAULT);
       continue;
@@ -253,15 +269,23 @@ int computeDangerScore(){
       worstfault = max(worstfault, SENSOR_FAULT);
       continue;
     } //For sensor faults
+    }
     
     float v = sensorData[i].voltage;
     float c = sensorData[i].current;
     
-    if(v > sensorData[i].maxVoltage){
-      worstfault = max(worstfault, OVERVOLTAGE);
-    }
-    if(v < sensorData[i].minVoltage){
-      worstfault = max(worstfault, UNDERVOLTAGE);
+    if(sensorData[i].sensorType == BUSSENSOR){
+      if(v > sensorData[i].maxVoltage){
+       worstfault = max(worstfault, OVERVOLTAGE);
+      }
+      if(v < sensorData[i].minVoltage){
+        if(sensorData[i].sensors == &ina219_1){
+          GRIDBAD = true;
+        }        
+        if(GRIDBAD == true){
+          worstfault = max(worstfault, UNDERVOLTAGE);
+        }
+      }
     }
 
     float currentRatio = c / (sensorData[i].maxCurrent*1000); //max current is divided by 1000 in order to convert from A to mA
@@ -276,28 +300,31 @@ int computeDangerScore(){
   static unsigned long faultStartTime = 0;
   static FAULTTYPE lastFault = NO_FAULT;
 
-  if(worstfault != NO_FAULT){
+  if(worstfault != NO_FAULT){    
     if(worstfault != lastFault){
-      faultStartTime = millis();
-      lastFault = worstfault;
-    
-      switch (worstfault) {
-        case UNDERVOLTAGE:
-          score +=10;
-          break;
-        case SENSOR_FAULT:
-          score += 5;
-          break;
-        case OVERCURRENT:
-          score += 20;
-          break;
-        case OVERVOLTAGE:
-          score += 25;
-          break;
-        default:
-          break;
+      if(millis()-faultStartTime > 2000){
+        faultStartTime = millis();
+        lastFault = worstfault;    
+        switch (worstfault) {
+          case UNDERVOLTAGE:
+            score +=10;
+            break;
+          case SENSOR_FAULT:
+            score += 2;
+            break;
+          case OVERCURRENT:
+            score += 50;
+            break;
+          case OVERVOLTAGE:
+            score += 50;
+            break;
+          default:
+            break;
+        }
       }
+
     }
+    
 
     if(millis()-faultStartTime > disasterTimeThreshold){
       faultStartTime = millis();
@@ -307,15 +334,15 @@ int computeDangerScore(){
         break;
        
         case SENSOR_FAULT: 
-        score += 2;
+        score += 1;
         break;
         
         case OVERCURRENT: 
-        score += 7; 
+        score += 50; 
         break;
        
         case OVERVOLTAGE: 
-        score += 10; 
+        score += 50; 
         break;
         
         default:  
@@ -331,7 +358,7 @@ int computeDangerScore(){
     }
   }  
 
-  score = constrain(score, 0, 100); 
+  score = constrain(score, 0, 100);   
   return score;
 }
 
@@ -339,16 +366,26 @@ int computeDangerScore(){
 /===== 6. HARDWARE CONTROL =====/
 
 void hardwareControl(int score){
-  
+  static bool justBooted = true;
+  bool relayCanSwitch = (millis() - lastSwitchTime > relayMinSwitchTime);
+
+  if(millis() < 3000 && justBooted == true){
+    digitalWrite(isolationRelay, LOW);
+    return;
+  }
+  else{
+    justBooted = false;    
+  }
+
   static unsigned long throttleStartTime[loadAmount] = {0};
   static unsigned long shedStartTime[loadAmount] = {0};
   static unsigned long buzzerTime = 0;
 
   if(Fault != USER_INPUT){
-    if(score > 70){
+    if(score >= 70){
       systemState = DISASTER;
     }
-    else if(score > 30){
+    else if(score >= 30){
       systemState = CONSERVING;
     }
     else{
@@ -356,9 +393,39 @@ void hardwareControl(int score){
     }
   }
 
+  
+  if(systemState == DISASTER){    
+    digitalWrite(ledDisaster, HIGH);
+    digitalWrite(ledNormal, LOW);
+    digitalWrite(ledConserving, LOW);
+  }
+  else if(systemState == CONSERVING){
+    digitalWrite(ledDisaster, LOW);
+    digitalWrite(ledNormal, LOW);
+    digitalWrite(ledConserving, HIGH);
+  }
+  else{
+    digitalWrite(ledDisaster, LOW);
+    digitalWrite(ledNormal, HIGH);
+    digitalWrite(ledConserving, LOW);
+  }
+
+  if(systemState == DISASTER && relayCanSwitch){
+    digitalWrite(isolationRelay, LOW);
+    lastSwitchTime = millis();
+  }
+  else if(systemState != DISASTER && relayCanSwitch){
+    digitalWrite(isolationRelay, HIGH);
+    lastSwitchTime = millis();
+  }
+
+
+
   if(Fault == OVERVOLTAGE || Fault == UNDERVOLTAGE){
-    if(systemState == DISASTER){
+    if(Fault == UNDERVOLTAGE){
       digitalWrite(isolationRelay, LOW);
+    }
+    if(systemState == DISASTER){
       for(int i = 0; i < loadAmount; i++){
         if(loadgroups[i].LoadPriority == CRITICAL){
           digitalWrite(loadgroups[i].mosfetPin, HIGH);
@@ -368,6 +435,7 @@ void hardwareControl(int score){
           digitalWrite(loadgroups[i].mosfetPin, LOW);
           loadgroups[i].PWM = 0;
         }
+       
       }
     }
 
@@ -406,19 +474,19 @@ void hardwareControl(int score){
           if(loadgroups[i].AcceptThrottling == true){
             unsigned long dt = millis() - throttleStartTime[i];
 
-            if(dt < 20000){
+            if(dt < 10000){
               analogWrite(loadgroups[i].mosfetPin, 255);
               loadgroups[i].PWM = 100;                       
             }
-            else if(dt < 40000){
+            else if(dt < 20000){
               analogWrite(loadgroups[i].mosfetPin, 255*0.75);
               loadgroups[i].PWM = 75;
             }
-            else if(dt < 60000){
+            else if(dt < 30000){
               analogWrite(loadgroups[i].mosfetPin, 255*0.5);
               loadgroups[i].PWM = 50;
             }
-            else if(dt < 80000){
+            else if(dt < 40000){
               analogWrite(loadgroups[i].mosfetPin, 255*0.25);
               loadgroups[i].PWM = 25;
             }
@@ -429,7 +497,7 @@ void hardwareControl(int score){
 
           }
           else{            
-            if(millis() - shedStartTime[i] < 80000){
+            if(millis() - shedStartTime[i] < 40000){
               digitalWrite(loadgroups[i].mosfetPin, LOW);
               loadgroups[i].PWM = 0;
             }
@@ -450,11 +518,11 @@ void hardwareControl(int score){
         shedStartTime [i] = millis();
       }      
     }
+   
   }
   else if(Fault == OVERCURRENT){
     for(int i = 0; i < loadAmount; i++){
-      if(systemState == DISASTER){
-        digitalWrite(isolationRelay, LOW);
+      if(systemState == DISASTER){        
         if(loadgroups[i].LoadPriority == CRITICAL){
           digitalWrite(loadgroups[i].mosfetPin, HIGH);
           loadgroups[i].PWM = 100;
@@ -608,11 +676,12 @@ void hardwareControl(int score){
         shedStartTime[i] = millis();
         throttleStartTime[i] = millis();
       }  
-    }    
+    }
+    
   }
   else if(Fault == USER_INPUT){
     for(int i = 0; i < loadAmount; i++){
-      if(systemState == DISASTER){
+      if(systemState == DISASTER){       
         if(loadgroups[i].LoadPriority == CRITICAL){
           digitalWrite(loadgroups[i].mosfetPin, HIGH);
           loadgroups[i].PWM = 100;
@@ -661,10 +730,12 @@ void hardwareControl(int score){
         shedStartTime[i] = millis();
       }
     }
+    
   }  
   else if(Fault == SENSOR_FAULT){
     static unsigned long buzzerEndTime = 0;
     static int buzzerState = LOW;
+    for(int i = 0; i < loadAmount; i++){
     if(systemState == DISASTER){
       digitalWrite(buzzer, HIGH);
     }
@@ -681,8 +752,11 @@ void hardwareControl(int score){
       digitalWrite(buzzer, buzzerState);
     }
     else{
-      digitalWrite(buzzer, LOW);
+      digitalWrite(buzzer, LOW);      
     }
+    digitalWrite(loadgroups[i].mosfetPin,HIGH);
+    }
+    
   }
   else{
     for(int i = 0; i < loadAmount; i++){
@@ -735,27 +809,9 @@ void hardwareControl(int score){
         shedStartTime[i] = millis();
       }
     }
+    
   }
-
-  if(systemState == DISASTER){
-    digitalWrite(ledDisaster, HIGH);
-    digitalWrite(ledNormal, LOW);
-    digitalWrite(ledConserving, LOW);
-  }
-  else if(systemState == CONSERVING){
-    digitalWrite(ledDisaster, LOW);
-    digitalWrite(ledNormal, LOW);
-    digitalWrite(ledConserving, HIGH);
-  }
-  else{
-    digitalWrite(ledDisaster, LOW);
-    digitalWrite(ledNormal, HIGH);
-    digitalWrite(ledConserving, LOW);
-  }
-
 }
-
-
 
 
 /===== 7. lcd display =====/
@@ -836,14 +892,13 @@ void configureLcd(int currentPage){
   totalPageNumber = faultPage;
 }
 
-int currentPageNumber = 1;
-
 
 
 /===== 8. lcd buttons =====/
 int lcdButtons(){
   static unsigned long lastButtonTime = 0;
   const unsigned long debounce = 200;
+  static int currentPageNumber = 1;
 
   if (millis() - lastButtonTime < debounce) return currentPageNumber;
   
@@ -873,14 +928,19 @@ int lcdButtons(){
 void setup() {
   Serial.begin(9600);
   Wire.begin();
+  Wire.setClock(100000);
+  Wire.setWireTimeout(3000, true);
   SensorSetup();
+  ina219_1.setCalibration_16V_400mA();
+  ina219_2.setCalibration_16V_400mA();
+
   pinMode(isolationRelay, OUTPUT);
   for(int i = 0; i < loadAmount; i++){
     pinMode(loadgroups[i].mosfetPin, OUTPUT);
   }
   pinMode(ledNormal, OUTPUT);
   pinMode(ledConserving, OUTPUT);
-  pinMode(ledConserving, OUTPUT);
+  pinMode(ledDisaster, OUTPUT);
   pinMode(buttonNormal, INPUT);
   pinMode(buttonConserving, INPUT);
   pinMode(buttonDisaster, INPUT);
@@ -889,9 +949,11 @@ void setup() {
   pinMode(buzzer, OUTPUT);
   lcd1.begin(16, 2);
   lcd1.clear();
+  wdt_enable(WDTO_2S);  
 }
 
 void loop() {
+  wdt_reset();
   retryMissingSensors();
   measureAndValidate();
   danger = computeDangerScore();
@@ -900,3 +962,5 @@ void loop() {
   pageNumber = lcdButtons();
   configureLcd(pageNumber);
 }
+
+/Marwan Khaled/
