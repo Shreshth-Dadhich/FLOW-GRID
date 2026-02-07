@@ -252,7 +252,7 @@ int computeDangerScore(){
     Fault = NO_FAULT;
   }
   
-  if(lastState == DISASTER && Fault == USER_INPUT){
+  if(Fault == USER_INPUT){
     switch(lastState){
       case DISASTER: systemState = lastState; return 100; 
       case CONSERVING: systemState = lastState; return 50;
@@ -282,11 +282,17 @@ int computeDangerScore(){
       if(v < sensorData[i].minVoltage){
         if(sensorData[i].sensors == &ina219_1){
           GRIDBAD = true;
-        }        
+        } 
+      }
+      else{
+          if(sensorData[i].sensors == &ina219_1){
+            GRIDBAD = false;
+          }
+        }
+        
         if(GRIDBAD == true){
           worstfault = max(worstfault, UNDERVOLTAGE);
         }
-      }
     }
 
     float currentRatio = c / (sensorData[i].maxCurrent*1000); //max current is divided by 1000 in order to convert from A to mA
@@ -378,8 +384,8 @@ void hardwareControl(int score){
     justBooted = false;    
   }
 
-  static unsigned long throttleStartTime[loadAmount] = {0};
-  static unsigned long shedStartTime[loadAmount] = {0};
+  static unsigned long throttleStartTime[loadAmount] = {};
+  static unsigned long shedStartTime[loadAmount] = {};
   static unsigned long buzzerTime = 0;
 
   if(Fault != USER_INPUT){
