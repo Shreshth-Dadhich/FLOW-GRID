@@ -1,4 +1,4 @@
-/THIS IS THE GIC MICROGRID COMPETITION PROJECT CREATED BY TEAM MICROLINK PRESENTING THE FLOWGRID PRODUCT TO AID IN ACHIEVING SDG 7/
+/*THIS IS THE GIC MICROGRID COMPETITION PROJECT CREATED BY TEAM MICROLINK PRESENTING THE FLOWGRID PRODUCT TO AID IN ACHIEVING SDG 7*/
 //coded by Marwan Khaled
 
 #include <LiquidCrystal.h>
@@ -8,7 +8,7 @@
 
 
 
-/===== 1. VARIABLES AND CONSTANTS =====/
+/*===== 1. VARIABLES AND CONSTANTS =====*/
 #define mosfet1 4
 #define mosfet2 5
 #define mosfet3 6
@@ -51,7 +51,7 @@ unsigned long lastSwitchTime = 0;
 
 
 
-/===== 2. GLOBAL STATES =====/
+/*===== 2. GLOBAL STATES =====*/
 
 LiquidCrystal lcd1(lcdRS,lcdE,lcdD4,lcdD5,lcdD6,lcdD7);
 
@@ -107,7 +107,7 @@ struct SENSORDATA {
 };
 
 
-/===== 3. Load group control =====/
+/*===== 3. Load group control =====*/
 
 LOADGROUP loadgroups[] = {
   {"Group1-LIGHTING", IMPORTANT, true, true, mosfet1, false, 100},
@@ -127,7 +127,7 @@ const int NUMOFSENSORS = sizeof(sensorData)/sizeof(sensorData[0]);
 
 
 
-/===== 4. MEASUREMENT AND VALIDATION =====/
+/*===== 4. MEASUREMENT AND VALIDATION =====*/
 
 void SensorSetup() {
   for(int i = 0; i < NUMOFSENSORS; i++){
@@ -224,7 +224,7 @@ void printSensorData(int score) {
 
 
 
-/===== 5.CALCULATE DANGER SCORE =====/
+/*===== 5.CALCULATE DANGER SCORE =====*/
 
 int computeDangerScore(){
   
@@ -363,7 +363,7 @@ int computeDangerScore(){
 }
 
 
-/===== 6. HARDWARE CONTROL =====/
+/*===== 6. HARDWARE CONTROL =====*/
 
 void hardwareControl(int score){
   static bool justBooted = true;
@@ -814,7 +814,7 @@ void hardwareControl(int score){
 }
 
 
-/===== 7. lcd display =====/
+/*===== 7. lcd display =====*/
 void configureLcd(int currentPage){
   static int lastPage = -1;
   static unsigned long lastUpdateTime = 0;
@@ -894,7 +894,7 @@ void configureLcd(int currentPage){
 
 
 
-/===== 8. lcd buttons =====/
+/*===== 8. lcd buttons =====*/
 int lcdButtons(){
   static unsigned long lastButtonTime = 0;
   const unsigned long debounce = 200;
@@ -924,7 +924,7 @@ int lcdButtons(){
 
 
 
-/===== ARDUINO CODE =====/
+/*===== ARDUINO EXECUUTION =====*/
 void setup() {
   Serial.begin(9600);
   Wire.begin();
@@ -963,4 +963,4 @@ void loop() {
   configureLcd(pageNumber);
 }
 
-/Marwan Khaled/
+/*Marwan Khaled*/
