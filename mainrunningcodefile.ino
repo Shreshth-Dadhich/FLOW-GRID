@@ -41,8 +41,8 @@
 #define disasterTimeThreshold 20000
 #define maxDetectedVoltage 24
 int pageNumber;
-int totalPageNumber;
-int danger;
+int totalPageNumber = 1;
+int danger = 0;
 
 unsigned long disasterEnterTime = 0;
 unsigned long lastSwitchTime = 0;
@@ -168,6 +168,7 @@ void measureAndValidate() {
 
   if(millis()-lastTime < 200) return;
   lastTime = millis();
+  lastReading = millis();
   
 
   for(int i = 0; i < NUMOFSENSORS; i++){
@@ -255,7 +256,7 @@ int computeDangerScore(){
     switch(lastState){
       case DISASTER: systemState = lastState; return 100; 
       case CONSERVING: systemState = lastState; return 50;
-      case NORMAL: systemState = lastState; break;
+      case NORMAL: systemState = lastState; return 0; break;
     }
   }
   
@@ -736,6 +737,7 @@ void hardwareControl(int score){
     static unsigned long buzzerEndTime = 0;
     static int buzzerState = LOW;
     for(int i = 0; i < loadAmount; i++){
+      loadgroups[i].PWM = 100;
     if(systemState == DISASTER){
       digitalWrite(buzzer, HIGH);
     }
